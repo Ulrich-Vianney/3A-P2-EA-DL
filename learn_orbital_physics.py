@@ -18,8 +18,7 @@ all_planet_dict = {
     "Jupiter": 5,
     "Saturn": 6,
     "Uranus" : 7,
-    "Neptune" : 8,
-    "Pluton" : 9
+    "Neptune" : 8
 }
 
 earth_only_dict = {
