@@ -9,30 +9,11 @@ import torch.nn as nn
 from numpy import exp, log
 from torchdiffeq import odeint
 
-all_planet_dict = {
-    "Sun" : 0,
-    "Mercury" : 1,
-    "Venus" : 2,
-    "Earth" : 3,
-    "Mars": 4,
-    "Jupiter": 5,
-    "Saturn": 6,
-    "Uranus" : 7,
-    "Neptune" : 8
-}
+all_planets = ["Sun", "Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
 
-earth_only_dict = {
-    "Sun" : 0,
-    "Earth" : 1
-}
+earth_only_list = ["Sun", "Earth"]
 
-telluric_only_dict = {
-    "Sun" : 0,
-    "Mercury" : 1,
-    "Venus" : 2,
-    "Earth" : 3,
-    "Mars": 4
-}
+telluric_planet = ["Sun", "Mercury", "Venus", "Earth", "Mars"]
 
 # Reference values for nondimensionalization
 L_ref = 1.5e11  # Earth-Sun distance in meters
@@ -40,30 +21,34 @@ M_ref = 6e24  # Mass of the Earth in kg
 T_ref = 3.15e7  # Orbital period of the Earth in seconds (1 year)
 
 class OrbitalDynamics(nn.Module):
-    def __init__(self, planet_dict = earth_only_dict,
-                 ln_mass = None, initial_pos = None, initial_vel = None):
+    def __init__(self, planet_list = earth_only_list,
+                 ln_mass = None, ln_G = None,
+                 initial_pos = None, initial_vel = None):
         super().__init__()
-        self.planet_dict = planet_dict
-        self.dim = len(self.planet_dict)
-        self.ln_G = nn.Parameter(torch.tensor(-23.0))  # Gravitational constant
-        
+        self.planet_list = planet_list
+        self.dim = len(self.planet_list)
+
+        if ln_G is not None:
+            self.ln_G = ln_G  # Gravitational constant
+        else:
+            self.ln_G = nn.Parameter(torch.tensor(-19.0))
         # Initialize masses (nondimensionalized)
         if ln_mass is not None:
-            self.ln_mass = ln_mass
+            self.ln_mass = nn.Parameter(ln_mass) # Log relative masses (with Earth at 0.0)
         else:
-            self.ln_mass = nn.Parameter(torch.tensor([12, 0.0]))  # Log masses (Sun and Earth)
+            self.ln_mass = nn.Parameter(torch.zeros(self.dim))  
 
         # Initialize positions (nondimensionalized)
         if initial_pos is not None:
             self.initial_pos = initial_pos
         else:
-            self.initial_pos = nn.Parameter(torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))  # Sun at origin, Earth at 1.0 in x-direction
+            self.initial_pos = nn.Parameter(torch.tensor([[1.0*i, 0.0, 0.0] for i in range(self.dim)]))  # Sun at origin, Earth at 1.0 in x-direction
 
         # Initialize velocities (nondimensionalized)
         if initial_vel is not None:
             self.initial_vel = initial_vel
         else:
-            self.initial_vel = nn.Parameter(torch.tensor([[0.0, 0.0, 0.0], [0.0, -6.28, 0.0]]))  # Earth moving in -y direction
+            self.initial_vel = nn.Parameter(torch.tensor([[0.0, -6.28*i, 0.0] for i in range(self.dim)]))  # Earth moving in -y direction
 
     
     def forward(self, t, state):
@@ -92,15 +77,16 @@ class OrbitalDynamics(nn.Module):
         # Concatenate dpos and dvel to form the derivative of the state
         return torch.cat([dpos, dvel], dim=0)
     
-    def simulate(self, times):
+    def simulate(self, times, mode = "position"):
+        ## Time must be non-dimensionalized
         state = torch.cat([self.initial_pos, self.initial_vel], dim=0)
 
-        # Observation times (nondimensionalized)
-        nondim_times = times/T_ref
-
-        solution = odeint(self, state, nondim_times, atol=1e-8, rtol=1e-8) 
+        solution = odeint(self, state, times, atol=1e-6, rtol=1e-6) 
         #absolute error and relative error à régler
-        trajectory = solution[:, :self.dim] # Extract positions from the solution
+        if mode == "position" :
+            trajectory = solution[:, :self.dim] # Extract positions from the solution
+        elif mode == "velocity":
+            trajectory = solution[:, :]
 
         return trajectory
 
@@ -145,7 +131,9 @@ def test_simplified_model():
     # Define time steps for simulation (in seconds)
     days = 365  # Simulate for 1 year
     seconds_per_day = 86400  # Number of seconds in a day
-    times = torch.linspace(0, 3*days * seconds_per_day, 1000)  # 1000 time steps over 1 year
+    times = torch.linspace(0, 3*days * seconds_per_day, 300)  # 1000 time steps over 1 year
+
+    times = times/T_ref  ### Non dimensionalization
 
     # Simulate the system
     trajectory = model.simulate(times)
@@ -166,7 +154,10 @@ def test_simplified_model():
     plt.grid()
     plt.show()
 
-test_simplified_model()
+
+
+if __name__ == "__main__" :
+    test_simplified_model()
 
 # # Define the model and simulate
 # model = OrbitalDynamics()
