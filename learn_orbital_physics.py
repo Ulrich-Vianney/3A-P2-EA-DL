@@ -20,10 +20,9 @@ L_ref = 1.5e11  # Earth-Sun distance in meters
 M_ref = 6e24  # Mass of the Earth in kg
 T_ref = 3.15e7  # Orbital period of the Earth in seconds (1 year)
 
+
 class OrbitalDynamics(nn.Module):
-    def __init__(self, planet_list = earth_only_list,
-                 ln_mass = None, ln_G = None,
-                 initial_pos = None, initial_vel = None):
+    def __init__(self, planet_list=earth_only_list, ln_mass=None, ln_G=None, initial_pos=None, initial_vel=None):
         super().__init__()
         self.planet_list = planet_list
         self.dim = len(self.planet_list)
@@ -34,28 +33,31 @@ class OrbitalDynamics(nn.Module):
             self.ln_G = nn.Parameter(torch.tensor(-19.0))
         # Initialize masses (nondimensionalized)
         if ln_mass is not None:
-            self.ln_mass = nn.Parameter(ln_mass) # Log relative masses (with Earth at 0.0)
+            self.ln_mass = nn.Parameter(ln_mass)  # Log relative masses (with Earth at 0.0)
         else:
-            self.ln_mass = nn.Parameter(torch.zeros(self.dim))  
+            self.ln_mass = nn.Parameter(torch.zeros(self.dim))
 
         # Initialize positions (nondimensionalized)
         if initial_pos is not None:
             self.initial_pos = initial_pos
         else:
-            self.initial_pos = nn.Parameter(torch.tensor([[1.0*i, 0.0, 0.0] for i in range(self.dim)]))  # Sun at origin, Earth at 1.0 in x-direction
+            self.initial_pos = nn.Parameter(
+                torch.tensor([[1.0 * i, 0.0, 0.0] for i in range(self.dim)])
+            )  # Sun at origin, Earth at 1.0 in x-direction
 
         # Initialize velocities (nondimensionalized)
         if initial_vel is not None:
             self.initial_vel = initial_vel
         else:
-            self.initial_vel = nn.Parameter(torch.tensor([[0.0, -6.28*i, 0.0] for i in range(self.dim)]))  # Earth moving in -y direction
+            self.initial_vel = nn.Parameter(
+                torch.tensor([[0.0, -6.28 * i, 0.0] for i in range(self.dim)])
+            )  # Earth moving in -y direction
 
-    
     def forward(self, t, state):
         # state: tensor of shape (2 * self.dim, 3)
         # Split state into positions and velocities
-        pos = state[:self.dim]
-        vel = state[self.dim:]
+        pos = state[: self.dim]
+        vel = state[self.dim :]
 
         # Compute pairwise differences
         diff = pos.unsqueeze(0) - pos.unsqueeze(1)  # Shape: (self.dim, self.dim, 3)
@@ -63,9 +65,13 @@ class OrbitalDynamics(nn.Module):
         dist_cubed = dist**3 + 1e-10  # Add small epsilon to avoid division by zero
 
         # Compute gravitational forces (nondimensionalized)
-        G = torch.exp(self.ln_G - 3*log(L_ref) + 2*log(T_ref) + log(M_ref)) ## G (m^3.s^-2.kg^-1) nondimensionalized
+        G = torch.exp(
+            self.ln_G - 3 * log(L_ref) + 2 * log(T_ref) + log(M_ref)
+        )  ## G (m^3.s^-2.kg^-1) nondimensionalized
         masses = torch.exp(self.ln_mass)
-        forces = G * (masses.unsqueeze(0) * masses.unsqueeze(1)).unsqueeze(2) * diff / dist_cubed.unsqueeze(2)  # Shape: (self.dim, self.dim, 3)
+        forces = (
+            G * (masses.unsqueeze(0) * masses.unsqueeze(1)).unsqueeze(2) * diff / dist_cubed.unsqueeze(2)
+        )  # Shape: (self.dim, self.dim, 3)
 
         # Sum forces to get the total force on each planet
         total_force = torch.sum(forces, dim=1)  # Shape: (self.dim, 3)
@@ -76,19 +82,20 @@ class OrbitalDynamics(nn.Module):
 
         # Concatenate dpos and dvel to form the derivative of the state
         return torch.cat([dpos, dvel], dim=0)
-    
-    def simulate(self, times, mode = "position"):
+
+    def simulate(self, times, mode="position"):
         ## Time must be non-dimensionalized
         state = torch.cat([self.initial_pos, self.initial_vel], dim=0)
 
-        solution = odeint(self, state, times, atol=1e-6, rtol=1e-6) 
-        #absolute error and relative error à régler
-        if mode == "position" :
-            trajectory = solution[:, :self.dim] # Extract positions from the solution
+        solution = odeint(self, state, times, atol=1e-6, rtol=1e-6)
+        # absolute error and relative error à régler
+        if mode == "position":
+            trajectory = solution[:, : self.dim]  # Extract positions from the solution
         elif mode == "velocity":
             trajectory = solution[:, :]
 
         return trajectory
+
 
 # def cosine_decay(learning_rate, global_step, decay_steps, alpha=0.0):
 #     global_step = min(global_step, decay_steps)
@@ -126,14 +133,20 @@ class OrbitalDynamics(nn.Module):
 
 def test_simplified_model():
     # Define the model
+    # model = OrbitalDynamics(
+    #     ln_mass=torch.tensor([12.0, 0.0]),
+    #     ln_G=torch.tensor(-23.0),
+    #     initial_pos=torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+    #     initial_vel=torch.tensor([[0.0, 0.0, 0.0], [0.0, -6.28, 0.0]]),
+    # )
     model = OrbitalDynamics()
 
     # Define time steps for simulation (in seconds)
     days = 365  # Simulate for 1 year
     seconds_per_day = 86400  # Number of seconds in a day
-    times = torch.linspace(0, 3*days * seconds_per_day, 300)  # 1000 time steps over 1 year
+    times = torch.linspace(0, 3 * days * seconds_per_day, 300)  # 1000 time steps over 1 year
 
-    times = times/T_ref  ### Non dimensionalization
+    times = times / T_ref  ### Non dimensionalization
 
     # Simulate the system
     trajectory = model.simulate(times)
@@ -142,7 +155,9 @@ def test_simplified_model():
     plt.figure(figsize=(10, 5))
 
     # Sun trajectory
-    plt.plot(trajectory[:, 0, 0].detach().numpy(), trajectory[:, 0, 1].detach().numpy(), '.', label="Sun", color="orange")
+    plt.plot(
+        trajectory[:, 0, 0].detach().numpy(), trajectory[:, 0, 1].detach().numpy(), ".", label="Sun", color="orange"
+    )
 
     # Earth trajectory
     plt.plot(trajectory[:, 1, 0].detach().numpy(), trajectory[:, 1, 1].detach().numpy(), label="Earth", color="blue")
@@ -155,8 +170,7 @@ def test_simplified_model():
     plt.show()
 
 
-
-if __name__ == "__main__" :
+if __name__ == "__main__":
     test_simplified_model()
 
 # # Define the model and simulate
