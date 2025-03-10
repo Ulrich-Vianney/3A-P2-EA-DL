@@ -60,6 +60,7 @@ class OrbitalDynamics(nn.Module):
 
         # Define a small auxiliary neural network for augmented dynamics
         if self.augmented_dim > 0:
+            self.augmented_state = torch.zeros(2 * self.dim, augmented_dim).to(self.device)
             self.aux_net = nn.Sequential(
                 nn.Linear(3 + augmented_dim, 32),  # Input: state + augmented part
                 nn.Tanh(),
@@ -71,17 +72,21 @@ class OrbitalDynamics(nn.Module):
     def forward(self, t, state):
         # state: tensor of shape (2 * self.dim , 3+ self.augmented_dim)
         # Split state into positions, velocities, and augmented dimensions
-        pos = state[: self.dim, : -self.augmented_dim]
-        vel = state[self.dim :, : -self.augmented_dim]
+        pos = state[: self.dim]
+        vel = state[self.dim :]
+        # pos = state[: self.dim, : -self.augmented_dim]
+        # vel = state[self.dim :, : -self.augmented_dim]
         # augmented = state[:, -self.augmented_dim :]
+        if self.augmented_dim > 0:
+            total_state = torch.cat([state, self.augmented_state], dim=1)
         # print(pos.shape, vel.shape, augmented.shape)
 
         # Compute pairwise differences
         diff = pos.unsqueeze(0) - pos.unsqueeze(1)  # Shape: (self.dim, self.dim, 3)
-        print(diff.shape)
+        # print(diff.shape)
         dist = torch.norm(diff, dim=2)  # Shape: (self.dim, self.dim)
         dist_cubed = dist**3 + 1e-10  # Add small epsilon to avoid division by zero
-        print(dist_cubed.shape)
+        # print(dist_cubed.shape)
         # Compute gravitational forces (nondimensionalized)
         G = torch.exp(
             self.ln_G - 3 * log(L_ref) + 2 * log(T_ref) + log(M_ref)
@@ -90,7 +95,7 @@ class OrbitalDynamics(nn.Module):
         mass_products = (masses.unsqueeze(0) * masses.unsqueeze(1)).unsqueeze(2)
 
         mass_products = mass_products.expand(-1, -1, 3)
-        print(mass_products.shape)
+        # print(mass_products.shape)
         forces = G * mass_products * diff / dist_cubed.unsqueeze(2)
         # forces = (
         #     G * (masses.unsqueeze(0) * masses.unsqueeze(1)).unsqueeze(2) * diff / dist_cubed.unsqueeze(2)
@@ -108,10 +113,10 @@ class OrbitalDynamics(nn.Module):
         # Concatenate dpos, dvel, and daugmented to form the derivative of the state
         if self.augmented_dim == 1:
             # Concatenate positions and augmented state as input to the auxiliary network
-            daugmented = self.aux_net(state)[:, -1].unsqueeze(1)  # Shape: (2*self.dim, augmented_dim)
+            daugmented = self.aux_net(total_state)[:, -1].unsqueeze(1)  # Shape: (2*self.dim, augmented_dim)
             return torch.cat([derivative, daugmented], dim=1)
         elif self.augmented_dim > 1:
-            daugmented = self.aux_net(state)[:, -self.augmented_dim :]
+            daugmented = self.aux_net(total_state)[:, -self.augmented_dim :]
             return torch.cat([derivative, daugmented], dim=1)
         else:
             return derivative
@@ -121,8 +126,7 @@ class OrbitalDynamics(nn.Module):
         if self.augmented_dim == 0:
             state = torch.cat([self.initial_pos, self.initial_vel], dim=0)
         elif self.augmented_dim > 0:
-            augmented_state = torch.zeros(2 * self.dim, self.augmented_dim)
-            # .to(self.device)
+            augmented_state = torch.zeros(2 * self.dim, self.augmented_dim).to(self.device)
             original_state = torch.cat([self.initial_pos, self.initial_vel], dim=0)
             state = torch.cat([original_state, augmented_state], dim=1)
 
