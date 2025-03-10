@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from numpy import exp, log
-from torchdiffeq import odeint
+from torchdiffeq import odeint, odeint_adjoint
 
 all_planets = ["Sun", "Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune"]
 
@@ -24,6 +24,7 @@ class OrbitalDynamics(nn.Module):
         self,
         planet_list=earth_only_list,
         ln_mass=None,
+        ln_G=None,
         initial_pos=None,
         initial_vel=None,
         augmented_dim=0,
@@ -34,20 +35,24 @@ class OrbitalDynamics(nn.Module):
         self.dim = len(self.planet_list)
         self.augmented_dim = augmented_dim
         self.device = device
-        self.ln_G = nn.Parameter(torch.tensor(-23.0))  # Gravitational constant
+
+        if ln_G is not None:
+            self.ln_G = ln_G  # Gravitational constant
+        else:
+            self.ln_G = nn.Parameter(torch.tensor(-19.0))
 
         # Initialize masses (nondimensionalized)
         if ln_mass is not None:
-            self.ln_mass = ln_mass
+            self.ln_mass = nn.Parameter(ln_mass)  # Log relative masses (with Earth at 0.0)
         else:
-            self.ln_mass = nn.Parameter(torch.tensor([12, 0.0]))  # Log masses (Sun and Earth)
+            self.ln_mass = nn.Parameter(torch.zeros(self.dim))
 
         # Initialize positions (nondimensionalized)
         if initial_pos is not None:
             self.initial_pos = initial_pos
         else:
             self.initial_pos = nn.Parameter(
-                torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+                torch.tensor([[1.0 * i, 0.0, 0.0] for i in range(self.dim)])
             )  # Sun at origin, Earth at 1.0 in x-direction
 
         # Initialize velocities (nondimensionalized)
@@ -55,15 +60,14 @@ class OrbitalDynamics(nn.Module):
             self.initial_vel = initial_vel
         else:
             self.initial_vel = nn.Parameter(
-                torch.tensor([[0.0, 0.0, 0.0], [0.0, -6.28, 0.0]])
+                torch.tensor([[0.0, -6.28 * i, 0.0] for i in range(self.dim)])
             )  # Earth moving in -y direction
 
         # Define a small auxiliary neural network for augmented dynamics
         if self.augmented_dim > 0:
-            self.augmented_state = torch.zeros(2 * self.dim, augmented_dim).to(self.device)
             self.aux_net = nn.Sequential(
                 nn.Linear(3 + augmented_dim, 32),  # Input: state + augmented part
-                nn.Tanh(),
+                nn.ReLU(),
                 nn.Linear(32, 3 + augmented_dim),
             )  # Output: dynamics for augmented state
         else:
@@ -72,34 +76,22 @@ class OrbitalDynamics(nn.Module):
     def forward(self, t, state):
         # state: tensor of shape (2 * self.dim , 3+ self.augmented_dim)
         # Split state into positions, velocities, and augmented dimensions
-        pos = state[: self.dim]
-        vel = state[self.dim :]
-        # pos = state[: self.dim, : -self.augmented_dim]
-        # vel = state[self.dim :, : -self.augmented_dim]
+        pos = state[: self.dim, : -self.augmented_dim]
+        vel = state[self.dim :, : -self.augmented_dim]
         # augmented = state[:, -self.augmented_dim :]
-        if self.augmented_dim > 0:
-            total_state = torch.cat([state, self.augmented_state], dim=1)
-        # print(pos.shape, vel.shape, augmented.shape)
 
         # Compute pairwise differences
         diff = pos.unsqueeze(0) - pos.unsqueeze(1)  # Shape: (self.dim, self.dim, 3)
-        # print(diff.shape)
         dist = torch.norm(diff, dim=2)  # Shape: (self.dim, self.dim)
         dist_cubed = dist**3 + 1e-10  # Add small epsilon to avoid division by zero
-        # print(dist_cubed.shape)
         # Compute gravitational forces (nondimensionalized)
         G = torch.exp(
             self.ln_G - 3 * log(L_ref) + 2 * log(T_ref) + log(M_ref)
         )  ## G (m^3.s^-2.kg^-1) nondimensionalized
         masses = torch.exp(self.ln_mass)
-        mass_products = (masses.unsqueeze(0) * masses.unsqueeze(1)).unsqueeze(2)
-
-        mass_products = mass_products.expand(-1, -1, 3)
-        # print(mass_products.shape)
-        forces = G * mass_products * diff / dist_cubed.unsqueeze(2)
-        # forces = (
-        #     G * (masses.unsqueeze(0) * masses.unsqueeze(1)).unsqueeze(2) * diff / dist_cubed.unsqueeze(2)
-        # )  # Shape: (self.dim, self.dim, 3)
+        forces = (
+            G * (masses.unsqueeze(0) * masses.unsqueeze(1)).unsqueeze(2) * diff / dist_cubed.unsqueeze(2)
+        )  # Shape: (self.dim, self.dim, 3)
 
         # Sum forces to get the total force on each planet
         total_force = torch.sum(forces, dim=1)  # Shape: (self.dim, 3)
@@ -113,10 +105,10 @@ class OrbitalDynamics(nn.Module):
         # Concatenate dpos, dvel, and daugmented to form the derivative of the state
         if self.augmented_dim == 1:
             # Concatenate positions and augmented state as input to the auxiliary network
-            daugmented = self.aux_net(total_state)[:, -1].unsqueeze(1)  # Shape: (2*self.dim, augmented_dim)
+            daugmented = self.aux_net(state)[:, -1].unsqueeze(1)  # Shape: (2*self.dim, augmented_dim)
             return torch.cat([derivative, daugmented], dim=1)
         elif self.augmented_dim > 1:
-            daugmented = self.aux_net(total_state)[:, -self.augmented_dim :]
+            daugmented = self.aux_net(state)[:, -self.augmented_dim :]
             return torch.cat([derivative, daugmented], dim=1)
         else:
             return derivative
@@ -126,7 +118,9 @@ class OrbitalDynamics(nn.Module):
         if self.augmented_dim == 0:
             state = torch.cat([self.initial_pos, self.initial_vel], dim=0)
         elif self.augmented_dim > 0:
-            augmented_state = torch.zeros(2 * self.dim, self.augmented_dim).to(self.device)
+            # augmented_state = torch.zeros(2 * self.dim, self.augmented_dim).to(self.device)
+            augmented_state = torch.randn(2 * self.dim, self.augmented_dim) * 1e-2
+            augmented_state = augmented_state.to(self.device)
             original_state = torch.cat([self.initial_pos, self.initial_vel], dim=0)
             state = torch.cat([original_state, augmented_state], dim=1)
 
@@ -134,6 +128,7 @@ class OrbitalDynamics(nn.Module):
         nondim_times = times / T_ref
 
         solution = odeint(self, state, nondim_times, atol=1e-8, rtol=1e-8)
+        # solution = odeint_adjoint(self, state, nondim_times, atol=1e-10, rtol=1e-10)
         # absolute error and relative error à régler
         trajectory = solution[:, : self.dim, : -self.augmented_dim]  # Extract positions from the solution
 
